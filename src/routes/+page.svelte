@@ -1,26 +1,26 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  // Mantenemos la importación de la librería que estás usando
+  // Importamos la librería para los pipelines de IA
   import { pipeline, type Pipeline } from '@xenova/transformers';
 
+  // --- Variables de Estado de la UI ---
   let status: string = 'Iniciando...';
   let transcript: string = '';
   let isRecording: boolean = false;
-  
-  // La variable para el pipeline de transcripción
-  let transcriber: Pipeline | null = null;
   let modelLoadingProgress: number = 0;
 
-  // Variables para la grabación de audio
+  // --- Variables Técnicas ---
+  let transcriber: Pipeline | null = null;
   let mediaRecorder: MediaRecorder | null = null;
   let audioChunks: Blob[] = [];
 
+  // --- Lógica Principal ---
+
+  // 1. Al cargar la página, preparamos el modelo de IA
   onMount(async () => {
     try {
       status = 'Cargando modelo de IA...';
-      // CAMBIO 1: Usamos 'whisper-small' para mayor calidad.
       transcriber = await pipeline('automatic-speech-recognition', 'Xenova/whisper-small', {
-        // MEJORA: Añadimos un callback para el progreso de la carga
         progress_callback: (progress: any) => {
           modelLoadingProgress = progress.progress;
           if (progress.status === 'progress') {
@@ -35,6 +35,7 @@
     }
   });
 
+  // 2. Función para iniciar la grabación
   async function startRecording() {
     if (!transcriber) {
       status = 'El modelo aún no está listo. Por favor, espera.';
@@ -48,34 +49,37 @@
         audioChunks.push(event.data);
       };
 
+      // Esta es la función clave que se ejecuta al detener la grabación
       mediaRecorder.onstop = async () => {
         if (audioChunks.length === 0) {
             status = 'No se grabó audio. Listo para dictar.';
             return;
         }
-        status = 'Procesando audio...';
-        const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+        status = 'Procesando audio... Por favor, espere.';
+        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
         
-        // Convertimos el Blob a un ArrayBuffer, que es más eficiente para el pipeline
+        // --- INICIO DE LA CORRECCIÓN DE PROCESAMIENTO DE AUDIO ---
         const arrayBuffer = await audioBlob.arrayBuffer();
-        const audioData = new Float32Array(arrayBuffer.byteLength / 4); // Asumiendo formato compatible
-        
+        const audioContext = new AudioContext({ sampleRate: 16000 });
+        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+        const audioData = audioBuffer.getChannelData(0);
+        // --- FIN DE LA CORRECCIÓN DE PROCESAMIENTO DE AUDIO ---
+
+        status = 'Transcribiendo... Esto puede tardar unos segundos.';
         const output = await transcriber(audioData, {
           chunk_length_s: 30,
           stride_length_s: 5,
-          language: 'spanish', // Forzamos el idioma para mayor precisión
+          language: 'spanish',
           task: 'transcribe',
         });
 
         if (output && typeof output.text === 'string') {
-            // CAMBIO 2: Aplicamos la lógica de comandos de voz
             const processedText = processTranscript(output.text);
-            // Añadimos el texto procesado al transcript existente
             transcript += (transcript.endsWith(' ') || transcript.length === 0 ? '' : ' ') + processedText.trim();
         }
 
         status = 'Listo para dictar.';
-        audioChunks = [];
+        audioChunks = []; // Limpiamos para la próxima grabación
       };
 
       audioChunks = [];
@@ -84,11 +88,12 @@
       status = 'Grabando... Habla ahora. Vuelve a hacer clic para detener.';
 
     } catch (error) {
-      console.error('Error al acceder al micrófono:', error);
-      status = 'Error: No se pudo acceder al micrófono. Revisa los permisos.';
+      console.error('Error durante la grabación o transcripción:', error);
+      status = 'Error. Revisa la consola (F12) para más detalles.';
     }
   }
 
+  // 3. Función para detener la grabación
   function stopRecording() {
     if (mediaRecorder && mediaRecorder.state !== 'inactive') {
       mediaRecorder.stop();
@@ -96,6 +101,7 @@
     }
   }
 
+  // 4. Manejador del botón principal
   function handleRecordClick() {
     if (isRecording) {
       stopRecording();
@@ -104,7 +110,7 @@
     }
   }
 
-  // CAMBIO 3: Función para procesar comandos de voz y puntuación
+  // 5. Función de utilidad para procesar comandos de voz
   function processTranscript(text: string): string {
     const replacements: { [key: string]: string } = {
         'coma': ',',
@@ -128,16 +134,15 @@
         processedText = processedText.replace(regex, `${replacements[command]} `);
     }
     
-    // Limpieza final y mayúsculas
     processedText = processedText.trim();
-    processedText = processedText.replace(/\s+([,.?!:;])/g, '$1'); // Elimina espacio antes de puntuación
+    processedText = processedText.replace(/\s+([,.?!:;])/g, '$1');
     processedText = processedText.replace(/([.!?]\s*|^)(\w)/g, (match, p1, p2) => p1 + p2.toUpperCase());
     processedText = processedText.charAt(0).toUpperCase() + processedText.slice(1);
 
     return processedText;
   }
 
-  // ----- CAMBIO 4: Funciones para los nuevos botones -----
+  // 6. Funciones para los botones de acción
   function copyToClipboard() {
     if (!transcript) return;
     navigator.clipboard.writeText(transcript).then(() => {
@@ -167,7 +172,7 @@
   }
 </script>
 
-<!-- CAMBIO 5: HTML y Estilos mejorados -->
+<!-- PARTE VISUAL (HTML) -->
 <svelte:head>
   <title>Asistente de Dictado Radiológico</title>
 </svelte:head>
@@ -208,6 +213,7 @@
   </footer>
 </div>
 
+<!-- ESTILOS (CSS) -->
 <style>
   :root {
     --primary-color: #007bff;
