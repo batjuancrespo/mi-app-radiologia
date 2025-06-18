@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  // Importamos la librería para los pipelines de IA
   import { pipeline, type Pipeline } from '@xenova/transformers';
 
   // --- Variables de Estado de la UI ---
@@ -16,11 +15,14 @@
 
   // --- Lógica Principal ---
 
-  // 1. Al cargar la página, preparamos el modelo de IA
+  // 1. Al cargar la página, preparamos el modelo de IA optimizado
   onMount(async () => {
     try {
       status = 'Cargando modelo optimizado de IA...';
-      // AÑADIMOS 'quantized: true'
+      
+      // --- INICIO DE LA OPTIMIZACIÓN DE VELOCIDAD ---
+      // Usamos el modelo 'whisper-small' y activamos la cuantización
+      // para una inferencia mucho más rápida con mínima pérdida de calidad.
       transcriber = await pipeline('automatic-speech-recognition', 'Xenova/whisper-small', {
         quantized: true, 
         progress_callback: (progress: any) => {
@@ -30,6 +32,8 @@
           }
         },
       });
+      // --- FIN DE LA OPTIMIZACIÓN DE VELOCIDAD ---
+
       status = 'Modelo cargado. Listo para dictar.';
     } catch (error) {
       console.error('Error al cargar el modelo:', error);
@@ -51,7 +55,6 @@
         audioChunks.push(event.data);
       };
 
-      // Esta es la función clave que se ejecuta al detener la grabación
       mediaRecorder.onstop = async () => {
         if (audioChunks.length === 0) {
             status = 'No se grabó audio. Listo para dictar.';
@@ -60,14 +63,12 @@
         status = 'Procesando audio... Por favor, espere.';
         const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
         
-        // --- INICIO DE LA CORRECCIÓN DE PROCESAMIENTO DE AUDIO ---
         const arrayBuffer = await audioBlob.arrayBuffer();
         const audioContext = new AudioContext({ sampleRate: 16000 });
         const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
         const audioData = audioBuffer.getChannelData(0);
-        // --- FIN DE LA CORRECCIÓN DE PROCESAMIENTO DE AUDIO ---
 
-        status = 'Transcribiendo... Esto puede tardar unos segundos.';
+        status = 'Transcribiendo...';
         const output = await transcriber(audioData, {
           chunk_length_s: 30,
           stride_length_s: 5,
@@ -81,7 +82,7 @@
         }
 
         status = 'Listo para dictar.';
-        audioChunks = []; // Limpiamos para la próxima grabación
+        audioChunks = [];
       };
 
       audioChunks = [];
