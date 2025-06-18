@@ -19,12 +19,14 @@
   // 1. Al cargar la página, preparamos el modelo de IA
   onMount(async () => {
     try {
-      status = 'Cargando modelo de IA...';
+      status = 'Cargando modelo optimizado de IA...';
+      // AÑADIMOS 'quantized: true'
       transcriber = await pipeline('automatic-speech-recognition', 'Xenova/whisper-small', {
+        quantized: true, 
         progress_callback: (progress: any) => {
           modelLoadingProgress = progress.progress;
           if (progress.status === 'progress') {
-            status = `Cargando modelo... ${Math.round(progress.progress)}%`;
+            status = `Cargando modelo (optimizado)... ${Math.round(progress.progress)}%`;
           }
         },
       });
