@@ -2,6 +2,9 @@
   import { onMount } from 'svelte';
   import { pipeline, type Pipeline } from '@xenova/transformers';
 
+  // --- Constantes de Configuración ---
+  const CHUNK_LENGTH_SECONDS = 5; // Procesar audio cada 5 segundos. Puedes ajustarlo a 3 para más reactividad.
+
   // --- Variables de Estado de la UI ---
   let status: string = 'Iniciando...';
   let transcript: string = '';
@@ -11,29 +14,25 @@
   // --- Variables Técnicas ---
   let transcriber: Pipeline | null = null;
   let mediaRecorder: MediaRecorder | null = null;
-  let audioChunks: Blob[] = [];
+  
+  // --- Variables para Streaming ---
+  let audioQueue: Blob[] = [];
+  let isProcessing: boolean = false;
 
   // --- Lógica Principal ---
 
-  // 1. Al cargar la página, preparamos el modelo de IA optimizado
   onMount(async () => {
     try {
       status = 'Cargando modelo optimizado de IA...';
-      
-      // --- INICIO DE LA OPTIMIZACIÓN DE VELOCIDAD ---
-      // Usamos el modelo 'whisper-small' y activamos la cuantización
-      // para una inferencia mucho más rápida con mínima pérdida de calidad.
       transcriber = await pipeline('automatic-speech-recognition', 'Xenova/whisper-small', {
-        quantized: true, 
-        progress_callback: (progress: any) => {
-          modelLoadingProgress = progress.progress;
-          if (progress.status === 'progress') {
-            status = `Cargando modelo (optimizado)... ${Math.round(progress.progress)}%`;
+        quantized: true,
+        progress_callback: (p: any) => { 
+          if (p.status === 'progress') {
+            modelLoadingProgress = p.progress; 
+            status = `Cargando modelo... ${Math.round(p.progress)}%`;
           }
         },
       });
-      // --- FIN DE LA OPTIMIZACIÓN DE VELOCIDAD ---
-
       status = 'Modelo cargado. Listo para dictar.';
     } catch (error) {
       console.error('Error al cargar el modelo:', error);
@@ -41,70 +40,89 @@
     }
   });
 
-  // 2. Función para iniciar la grabación
-  async function startRecording() {
-    if (!transcriber) {
-      status = 'El modelo aún no está listo. Por favor, espera.';
+  async function processQueue() {
+    if (isProcessing || audioQueue.length === 0) {
       return;
     }
+
+    isProcessing = true;
+    
+    // Si no estamos grabando, actualizamos el estado para el último procesamiento
+    if (!isRecording) {
+      status = `Procesando ${audioQueue.length} fragmento(s) restante(s)...`;
+    }
+    
+    const audioBlob = audioQueue.shift()!;
+
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      mediaRecorder = new MediaRecorder(stream);
-      
-      mediaRecorder.ondataavailable = (event) => {
-        audioChunks.push(event.data);
-      };
+      const arrayBuffer = await audioBlob.arrayBuffer();
+      const audioContext = new AudioContext({ sampleRate: 16000 });
+      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+      const audioData = audioBuffer.getChannelData(0);
 
-      mediaRecorder.onstop = async () => {
-        if (audioChunks.length === 0) {
-            status = 'No se grabó audio. Listo para dictar.';
-            return;
-        }
-        status = 'Procesando audio... Por favor, espere.';
-        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-        
-        const arrayBuffer = await audioBlob.arrayBuffer();
-        const audioContext = new AudioContext({ sampleRate: 16000 });
-        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-        const audioData = audioBuffer.getChannelData(0);
+      const output = await transcriber(audioData, {
+        language: 'spanish',
+        task: 'transcribe',
+      });
 
-        status = 'Transcribiendo...';
-        const output = await transcriber(audioData, {
-          chunk_length_s: 30,
-          stride_length_s: 5,
-          language: 'spanish',
-          task: 'transcribe',
-        });
-
-        if (output && typeof output.text === 'string') {
-            const processedText = processTranscript(output.text);
-            transcript += (transcript.endsWith(' ') || transcript.length === 0 ? '' : ' ') + processedText.trim();
-        }
-
-        status = 'Listo para dictar.';
-        audioChunks = [];
-      };
-
-      audioChunks = [];
-      mediaRecorder.start();
-      isRecording = true;
-      status = 'Grabando... Habla ahora. Vuelve a hacer clic para detener.';
+      if (output && typeof output.text === 'string') {
+        const processedText = processTranscript(output.text);
+        transcript += processedText;
+      }
 
     } catch (error) {
-      console.error('Error durante la grabación o transcripción:', error);
-      status = 'Error. Revisa la consola (F12) para más detalles.';
+      console.error("Error procesando fragmento de audio:", error);
+    } finally {
+      isProcessing = false;
+      // Vuelve a llamar a la función para procesar el siguiente trozo si lo hay
+      processQueue();
     }
   }
 
-  // 3. Función para detener la grabación
-  function stopRecording() {
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-      mediaRecorder.stop();
+  async function startRecording() {
+    if (!transcriber) return;
+    
+    audioQueue = [];
+    isRecording = true;
+    status = 'Grabando... El texto aparecerá en tiempo real.';
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaRecorder = new MediaRecorder(stream);
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioQueue.push(event.data);
+          processQueue();
+        }
+      };
+
+      mediaRecorder.onstop = () => {
+        isRecording = false;
+        // Al parar, la cola se seguirá procesando. Cuando termine, actualizamos el estado.
+        const checkQueueEmpty = setInterval(() => {
+          if (audioQueue.length === 0 && !isProcessing) {
+            status = 'Listo para dictar.';
+            clearInterval(checkQueueEmpty);
+          }
+        }, 500);
+      };
+
+      mediaRecorder.start(CHUNK_LENGTH_SECONDS * 1000);
+
+    } catch (error) {
+      console.error('Error al iniciar la grabación:', error);
+      status = 'Error al acceder al micrófono.';
       isRecording = false;
     }
   }
 
-  // 4. Manejador del botón principal
+  function stopRecording() {
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      mediaRecorder.stop();
+    }
+  }
+
   function handleRecordClick() {
     if (isRecording) {
       stopRecording();
@@ -113,8 +131,10 @@
     }
   }
 
-  // 5. Función de utilidad para procesar comandos de voz
   function processTranscript(text: string): string {
+    const trimmedText = text.trim();
+    if (!trimmedText) return '';
+
     const replacements: { [key: string]: string } = {
         'coma': ',',
         'punto': '.',
@@ -130,7 +150,7 @@
         'nuevo párrafo': '\n\n',
     };
 
-    let processedText = ` ${text.toLowerCase()} `;
+    let processedText = ` ${trimmedText.toLowerCase()} `;
     
     for (const command in replacements) {
         const regex = new RegExp(` ${command} `, 'gi');
@@ -140,15 +160,13 @@
     processedText = processedText.trim();
     processedText = processedText.replace(/\s+([,.?!:;])/g, '$1');
     processedText = processedText.replace(/([.!?]\s*|^)(\w)/g, (match, p1, p2) => p1 + p2.toUpperCase());
-    processedText = processedText.charAt(0).toUpperCase() + processedText.slice(1);
-
-    return processedText;
+    
+    return ' ' + processedText;
   }
 
-  // 6. Funciones para los botones de acción
   function copyToClipboard() {
     if (!transcript) return;
-    navigator.clipboard.writeText(transcript).then(() => {
+    navigator.clipboard.writeText(transcript.trim()).then(() => {
       const originalStatus = status;
       status = '¡Informe copiado al portapapeles!';
       setTimeout(() => { status = originalStatus }, 2000);
@@ -162,7 +180,7 @@
 
   function downloadText() {
     if (!transcript) return;
-    const blob = new Blob([transcript], { type: 'text/plain;charset=utf-8' });
+    const blob = new Blob([transcript.trim()], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -195,13 +213,13 @@
 
   <div class="main-controls">
     <button on:click={handleRecordClick} class:recording={isRecording} disabled={!transcriber}>
-      {isRecording ? 'Detener y Transcribir' : 'Iniciar Dictado'}
+      {isRecording ? 'Detener Dictado' : 'Iniciar Dictado'}
     </button>
   </div>
   
   <textarea
     bind:value={transcript}
-    placeholder="Aquí aparecerá la transcripción de su dictado..."
+    placeholder="Aquí aparecerá la transcripción de su dictado en tiempo real..."
     rows="20"
   ></textarea>
 
